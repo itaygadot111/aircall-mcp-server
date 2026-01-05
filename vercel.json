@@ -16,9 +16,5 @@
       "src": "/mcp",
       "dest": "/api/mcp.py"
     }
-  ],
-  "env": {
-    "AIRCALL_API_ID": "@aircall-api-id",
-    "AIRCALL_API_TOKEN": "@aircall-api-token"
-  }
+  ]
 }
