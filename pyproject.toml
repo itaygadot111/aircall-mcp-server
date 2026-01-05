@@ -1,0 +1,22 @@
+[project]
+name = "aircall-mcp-server"
+version = "0.1.0"
+description = "MCP server for Aircall API integration - access calls, transcripts, and summaries"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "httpx>=0.25.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+aircall-mcp = "aircall_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aircall_mcp"]
