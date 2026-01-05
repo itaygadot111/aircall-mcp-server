@@ -177,6 +177,82 @@ The server implements client-side rate limiting to respect Aircall's 60 requests
 | `AIRCALL_RATE_LIMIT` | No | `60` | Requests per minute |
 | `AIRCALL_TIMEOUT` | No | `30` | Request timeout in seconds |
 
+## Vercel Deployment
+
+You can deploy this MCP server to Vercel for remote access via HTTP.
+
+### Deploy to Vercel
+
+1. **Fork or clone this repository**
+
+2. **Deploy to Vercel**
+   ```bash
+   npm i -g vercel
+   vercel
+   ```
+
+3. **Set environment variables in Vercel Dashboard**
+   - Go to your project settings → Environment Variables
+   - Add `AIRCALL_API_ID` and `AIRCALL_API_TOKEN`
+
+   Or use the CLI:
+   ```bash
+   vercel env add AIRCALL_API_ID
+   vercel env add AIRCALL_API_TOKEN
+   ```
+
+4. **Redeploy after adding env vars**
+   ```bash
+   vercel --prod
+   ```
+
+### Using the Remote MCP Server
+
+Once deployed, your MCP server will be available at:
+```
+https://your-project.vercel.app/mcp
+```
+
+#### Claude Desktop Configuration (Remote)
+
+```json
+{
+  "mcpServers": {
+    "aircall": {
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://your-project.vercel.app/mcp"
+      }
+    }
+  }
+}
+```
+
+#### Claude Code Configuration (Remote)
+
+Add to your project's `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "aircall": {
+      "type": "streamable-http",
+      "url": "https://your-project.vercel.app/mcp"
+    }
+  }
+}
+```
+
+### Local vs Remote Trade-offs
+
+| Aspect | Local (stdio) | Remote (Vercel) |
+|--------|---------------|-----------------|
+| Latency | Lower | Higher (network) |
+| Setup | More complex | One-time deploy |
+| Credentials | Local env vars | Vercel env vars |
+| Availability | When machine is on | Always on |
+| Cost | Free | Vercel pricing |
+
 ## License
 
 MIT
