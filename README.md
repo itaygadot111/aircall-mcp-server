@@ -102,6 +102,26 @@ Add to your project's `.claude/settings.json`:
 
 ## Available Tools
 
+### `aircall_ask` (Recommended)
+
+**Ask natural language questions about your Aircall data.** This is the recommended tool for most queries - it handles date parsing, transcript searching, and parallel processing automatically.
+
+**Parameters:**
+- `question` (str): Your question in natural language
+- `limit` (int): Maximum calls to analyze (1-50, default: 20)
+
+**Example questions:**
+- "Were there any calls about AI Assist Pro today?"
+- "Show me calls from yesterday mentioning pricing"
+- "Find calls this week where customers complained"
+- "What calls happened in the last 3 days about refunds?"
+
+**Supported date formats:**
+- "today", "yesterday"
+- "this week", "last week"
+- "this month", "last month"
+- "past N days" / "last N hours"
+
 ### `aircall_list_calls`
 
 List calls with filtering and pagination.

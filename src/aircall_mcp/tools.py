@@ -1,10 +1,117 @@
 """MCP tools for Aircall API access."""
 
+import asyncio
 import json
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+
+
+def parse_natural_date(text: str) -> tuple[datetime | None, datetime | None]:
+    """Parse natural language date references into (from_date, to_date) tuple.
+
+    Supports:
+    - "today", "yesterday"
+    - "this week", "last week"
+    - "this month", "last month"
+    - "past N days/hours"
+    - ISO dates like "2024-01-15"
+
+    Returns start of day for from_date and end of day for to_date.
+    """
+    text = text.lower().strip()
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    if text in ("today", "today's"):
+        return today_start, today_end
+
+    if text == "yesterday":
+        yesterday = today_start - timedelta(days=1)
+        return yesterday, yesterday.replace(hour=23, minute=59, second=59)
+
+    if text in ("this week", "this week's"):
+        week_start = today_start - timedelta(days=today_start.weekday())
+        return week_start, today_end
+
+    if text in ("last week", "last week's"):
+        this_week_start = today_start - timedelta(days=today_start.weekday())
+        last_week_start = this_week_start - timedelta(days=7)
+        last_week_end = this_week_start - timedelta(seconds=1)
+        return last_week_start, last_week_end
+
+    if text in ("this month", "this month's"):
+        month_start = today_start.replace(day=1)
+        return month_start, today_end
+
+    if text in ("last month", "last month's"):
+        this_month_start = today_start.replace(day=1)
+        last_month_end = this_month_start - timedelta(seconds=1)
+        last_month_start = last_month_end.replace(day=1, hour=0, minute=0, second=0)
+        return last_month_start, last_month_end
+
+    # "past N days" or "last N days"
+    match = re.match(r"(?:past|last)\s+(\d+)\s+days?", text)
+    if match:
+        days = int(match.group(1))
+        return today_start - timedelta(days=days), today_end
+
+    # "past N hours" or "last N hours"
+    match = re.match(r"(?:past|last)\s+(\d+)\s+hours?", text)
+    if match:
+        hours = int(match.group(1))
+        return now - timedelta(hours=hours), now
+
+    # Try ISO date
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed, parsed.replace(hour=23, minute=59, second=59)
+    except ValueError:
+        pass
+
+    return None, None
+
+
+def extract_date_from_query(query: str) -> tuple[str, datetime | None, datetime | None]:
+    """Extract date references from a natural language query.
+
+    Returns (cleaned_query, from_date, to_date).
+    """
+    query_lower = query.lower()
+
+    # Date patterns to look for (ordered by specificity)
+    date_patterns = [
+        (r"\btoday'?s?\b", "today"),
+        (r"\byesterday'?s?\b", "yesterday"),
+        (r"\bthis week'?s?\b", "this week"),
+        (r"\blast week'?s?\b", "last week"),
+        (r"\bthis month'?s?\b", "this month"),
+        (r"\blast month'?s?\b", "last month"),
+        (r"\b(?:past|last)\s+\d+\s+days?\b", None),  # Keep the match
+        (r"\b(?:past|last)\s+\d+\s+hours?\b", None),  # Keep the match
+    ]
+
+    from_date, to_date = None, None
+    cleaned_query = query
+
+    for pattern, replacement in date_patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            matched_text = match.group(0)
+            from_date, to_date = parse_natural_date(replacement or matched_text)
+            if from_date:
+                # Remove the date reference from the query
+                cleaned_query = re.sub(pattern, "", query, flags=re.IGNORECASE).strip()
+                # Clean up extra spaces and common connectors
+                cleaned_query = re.sub(r"\s+(from|on|in|during)\s*$", "", cleaned_query, flags=re.IGNORECASE)
+                cleaned_query = re.sub(r"^\s*(from|on|in|during)\s+", "", cleaned_query, flags=re.IGNORECASE)
+                cleaned_query = re.sub(r"\s+", " ", cleaned_query).strip()
+                break
+
+    return cleaned_query, from_date, to_date
 
 from .client import AircallClient, AircallAPIError
 from .models import (
@@ -618,5 +725,182 @@ def register_tools(mcp: FastMCP, client: AircallClient):
 
         except AircallAPIError as e:
             return f"Error: {e.message}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @mcp.tool()
+    async def aircall_ask(
+        question: str,
+        limit: int = 20,
+    ) -> str:
+        """Ask a natural language question about your Aircall data.
+
+        This is the recommended tool for answering questions about calls. It handles:
+        - Natural language date parsing ("today", "yesterday", "last week", etc.)
+        - Searching transcripts for specific topics or keywords
+        - Finding calls with specific characteristics
+        - Parallel processing for faster results
+
+        Examples:
+        - "Were there any calls about AI Assist Pro today?"
+        - "Show me calls from yesterday mentioning pricing"
+        - "Find calls this week where customers complained"
+        - "What calls happened in the last 3 days about refunds?"
+
+        Args:
+            question: Your question in natural language
+            limit: Maximum calls to analyze (1-50, default: 20)
+
+        Returns:
+            A clear answer to your question with relevant call details
+        """
+        if not question or len(question.strip()) < 3:
+            return "Please provide a question with at least 3 characters."
+
+        limit = max(1, min(50, limit))
+
+        try:
+            # Extract date references from the question
+            cleaned_query, from_date, to_date = extract_date_from_query(question)
+
+            # Convert dates to timestamps for API
+            from_ts = int(from_date.timestamp()) if from_date else None
+            to_ts = int(to_date.timestamp()) if to_date else None
+
+            # Extract potential search terms (remove common question words)
+            search_terms = cleaned_query
+            for remove in ["were there", "was there", "are there", "is there",
+                           "any calls", "calls", "call", "about", "regarding",
+                           "mentioning", "where", "what", "which", "how many",
+                           "show me", "find", "get", "list", "search for"]:
+                search_terms = re.sub(rf"\b{remove}\b", "", search_terms, flags=re.IGNORECASE)
+            search_terms = re.sub(r"\s+", " ", search_terms).strip()
+            search_terms = search_terms.strip("?.,!")
+
+            # Build date range description
+            date_desc = ""
+            if from_date and to_date:
+                if from_date.date() == to_date.date():
+                    date_desc = f"on {from_date.strftime('%Y-%m-%d')}"
+                else:
+                    date_desc = f"from {from_date.strftime('%Y-%m-%d')} to {to_date.strftime('%Y-%m-%d')}"
+            elif from_date:
+                date_desc = f"since {from_date.strftime('%Y-%m-%d')}"
+
+            # First, get calls in the date range
+            data = await client.list_calls(
+                per_page=limit,
+                from_timestamp=from_ts,
+                to_timestamp=to_ts,
+            )
+            calls = data.get("calls", [])
+
+            if not calls:
+                no_calls_msg = f"No calls found {date_desc}." if date_desc else "No calls found."
+                return no_calls_msg
+
+            # If we have search terms, search through transcripts in parallel
+            if search_terms and len(search_terms) >= 2:
+                async def search_call_transcript(call: dict) -> dict | None:
+                    """Search a single call's transcript for matches."""
+                    call_id = call.get("id")
+                    try:
+                        transcript = await client.get_transcript(call_id)
+                        if not transcript:
+                            return None
+
+                        content = transcript.get("content", {})
+                        utterances = content.get("utterances", [])
+
+                        search_lower = search_terms.lower()
+                        matching_excerpts = []
+
+                        for u in utterances:
+                            text = u.get("text", "")
+                            if search_lower in text.lower():
+                                participant = u.get("participant_type", "unknown")
+                                if participant == "internal":
+                                    speaker = "Agent"
+                                elif participant == "ai_voice_agent":
+                                    speaker = "AI Assistant"
+                                elif participant == "external":
+                                    speaker = "Customer"
+                                else:
+                                    speaker = "Unknown"
+                                matching_excerpts.append(f"{speaker}: {text}")
+
+                        if matching_excerpts:
+                            return {
+                                "call": call,
+                                "excerpts": matching_excerpts[:3],  # Limit to 3 excerpts
+                            }
+                    except Exception:
+                        pass  # Skip calls with errors
+                    return None
+
+                # Search transcripts in parallel with timeout
+                try:
+                    tasks = [search_call_transcript(call) for call in calls]
+                    results = await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True),
+                        timeout=60.0  # 60 second timeout for all searches
+                    )
+                    matches = [r for r in results if r and not isinstance(r, Exception)]
+                except asyncio.TimeoutError:
+                    return f"Search timed out after 60 seconds. Try narrowing your date range or being more specific."
+
+                # Format results
+                if not matches:
+                    searched_msg = f"Searched {len(calls)} calls {date_desc}" if date_desc else f"Searched {len(calls)} calls"
+                    return f"No calls found mentioning '{search_terms}'. {searched_msg}, but none contained matching content in their transcripts."
+
+                lines = [f"# Found {len(matches)} call(s) mentioning '{search_terms}'"]
+                if date_desc:
+                    lines.append(f"*{date_desc}*")
+                lines.append("")
+
+                for match in matches:
+                    call = match["call"]
+                    user = call.get("user") or {}
+                    lines.append(f"## Call {call['id']}")
+                    lines.append(f"- **Date**: {format_datetime(call.get('started_at'))}")
+                    lines.append(f"- **Direction**: {call.get('direction', 'unknown')}")
+                    lines.append(f"- **Duration**: {format_duration(call.get('duration'))}")
+                    if user.get("name"):
+                        lines.append(f"- **Agent**: {user['name']}")
+                    lines.append("")
+                    lines.append("**Relevant excerpts:**")
+                    for excerpt in match["excerpts"]:
+                        lines.append(f"> {excerpt}")
+                    lines.append("")
+
+                return "\n".join(lines)
+
+            else:
+                # No search terms - just list the calls
+                lines = [f"# {len(calls)} call(s) found"]
+                if date_desc:
+                    lines.append(f"*{date_desc}*")
+                lines.append("")
+
+                for call in calls[:10]:  # Limit to 10 for overview
+                    user = call.get("user") or {}
+                    lines.append(f"## Call {call['id']}")
+                    lines.append(f"- **Date**: {format_datetime(call.get('started_at'))}")
+                    lines.append(f"- **Direction**: {call.get('direction', 'unknown')}")
+                    lines.append(f"- **Duration**: {format_duration(call.get('duration'))}")
+                    if user.get("name"):
+                        lines.append(f"- **Agent**: {user['name']}")
+                    lines.append("")
+
+                if len(calls) > 10:
+                    lines.append(f"*...and {len(calls) - 10} more calls*")
+                    lines.append("")
+                    lines.append("Tip: Add a search term to find specific content (e.g., 'calls about pricing today')")
+
+                return "\n".join(lines)
+
+        except AircallAPIError as e:
+            return f"Error accessing Aircall: {e.message}"
         except Exception as e:
             return f"Error: {str(e)}"
