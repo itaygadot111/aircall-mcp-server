@@ -11,13 +11,31 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from src.aircall_mcp.client import AircallClient
 from src.aircall_mcp.tools import register_tools
+
+# Configure transport security for Vercel deployment
+# Allow requests from the Vercel domain
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        "aircall-mcp-server.vercel.app",
+        "localhost:3000",
+        "localhost:*",
+    ],
+    allowed_origins=[
+        "https://aircall-mcp-server.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:*",
+    ],
+)
 
 # Initialize FastMCP server
 mcp = FastMCP(
     "aircall",
     instructions="Access Aircall calls, transcripts, and summaries",
+    transport_security=transport_security,
 )
 
 # Global client instance
